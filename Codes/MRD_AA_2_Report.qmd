@@ -1,0 +1,547 @@
+---
+title: "Analytics Assignment 2 - Resume Data"
+author: "Revanth Chowdary Ganga (rg361)"
+format: pdf
+editor: visual
+echo: FALSE
+output: FALSE
+geometry: margin = 1.0cm
+---
+
+```{r, warning=FALSE, message=FALSE}
+#Loading Required Packages and Libraries
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(openintro)
+library(gtsummary)
+library(caret)
+library(pROC)
+library(stargazer)
+library(cvms)
+library(gridExtra)
+library(ggpubr)
+```
+
+```{r}
+#Loading the Data
+data("resume")
+```
+
+# 1. Overview
+
+The aim of this analysis is to study **how race and gender influence job application callback rates.**
+
+The [Resume Dataset](https://www.openintro.org/data/index.php?data=resume) from OpenIntro library in R is used for this analysis. The outcome variable is binary in nature (received or didn't receive callback) and hence a **Logistic Regression Model** has been used to make an **Inference** on the factors (esp. Race and Gender) which may impact the callback rate.
+
+This document walks-through the following steps used for the project:
+
+1.  Data: Overview, Cleaning and Processing
+2.  Modelling: Model Selection, Variable Selection, Model Output, Model Assessment
+3.  Results
+4.  Future Work
+
+# 2. Data Overview and Cleaning
+
+## 2.1 Data Overview
+
+The [Resume Dataset](https://www.openintro.org/data/index.php?data=resume) was created by sending artificially generated resumes to different employers in Chicago and Boston during 2001 and 2002 and checking if the resumes got picked for further steps.
+
+The Dataset has **4,870** Observations of **30** variables, The variables can be broadly classified into the following categories (with selected examples):
+
+-   employer related: location, industry, contractor info, equal opportunity employer status
+
+-   job requirement related: educational qualifications or if computer skills etc. are required for the job
+
+-   Applicant Information: Gender, Race, educational qualifications, prior work experience
+
+-   resume: overall classification of the resumes quality (low / high)
+
+-   Callback: a binary `outcome variable` which represents if the resume got picked for further steps
+
+Out of the 4,870 observations, only **392** observations (\~8% of total) have a positive outcome (resume selected) so the data is unbalanced. However, since we are doing Inference no balancing procedures have been done as it is not required.
+
+```{r}
+str(resume)
+```
+
+```{r}
+names(resume)
+```
+
+## 2.2 Data Cleaning and Processing
+
+Before modelling, the Data was cleaned and processed to prepare it for modelling.
+
+The following general cleaning steps were performed:
+
+1.  Checking for NAs: out of all the columns, only the `federal contractor status` column had NAs
+2.  Converting to suitable types: wherever applicable, columns were converted to the relevant type (mostly Factor) e.g. job type, city, columns with requirement information for skills etc.
+3.  Combining levels: in some columns, some specific values had very few observations, in these cases they were combined with other suitable categories to reduce standard errors e.g. experience required
+4.  Imputation: some columns which had blanks (intentional, not NAs) for few observations were imputed with suitable assumed values e.g. experience required
+
+The following assumptions or decisions were made during the cleaning process:
+
+1.  federal contractor status column was excluded for further analysis due to the very high % of NAs (1,768 \| \~36%)
+2.  for the job experience required column, "some" and "0.5" were combined with 1 and wherever blanks were present it was assumed that the jobs had no requirements so they were imputed with 0
+3.  Derived Variables were created (start with "satisfy\_") to have boolean values to represent if the applicant met certain conditions, this helps in removing the influence of outlier points and multicollinearity. e.g. minimum job experience, computer skills
+
+**No** Observations were dropped from the dataset during the cleaning process.
+
+```{r}
+#Start Column by column analysis and cleaning
+
+#Create a copy to work with
+resume_clean <- resume
+
+#maintain list of columns to drop
+column_drop <- c("job_ad_id")
+```
+
+```{r}
+table(resume_clean$job_city, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to Factor
+resume_clean$job_city <- as.factor(resume_clean$job_city)
+```
+
+```{r}
+table(resume_clean$job_industry, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Convert to a factor
+resume_clean$job_industry <- as.factor(resume_clean$job_industry)
+```
+
+```{r}
+table(resume_clean$job_type, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Convert to a factor
+resume_clean$job_type <- as.factor(resume_clean$job_type)
+```
+
+```{r}
+table(resume_clean$job_fed_contractor, useNA = 'always')
+
+#Since This column has too many NAs, it will not be considered for the analysis
+column_drop <- append(column_drop,"job_fed_contractor")
+```
+
+```{r}
+table(resume_clean$job_equal_opp_employer, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Convert to a factor
+resume_clean$job_equal_opp_employer <- as.factor(resume_clean$job_equal_opp_employer)
+
+```
+
+```{r}
+table(resume_clean$job_ownership, useNA = 'always')
+
+#Column will not be used since a large subset of the data is in the "unknown" category, even though there are no NA values
+column_drop <- append(column_drop,"job_ownership")
+```
+
+```{r}
+table(resume_clean$job_req_any, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Convert to a factor
+resume_clean$job_req_any <- as.factor(resume_clean$job_req_any)
+
+#drop since it will have multi-collinearity and cannot be quantified
+column_drop <- append(column_drop,"job_req_any")
+
+```
+
+```{r}
+table(resume_clean$job_req_communication, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Column will not be used since this is not directly quantifiable
+column_drop <- append(column_drop,"job_req_communication")
+```
+
+```{r}
+table(resume_clean$job_req_education, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+resume_clean$job_req_education <- as.factor(resume_clean$job_req_education)
+```
+
+```{r}
+table(resume_clean$job_req_min_experience, useNA = 'always')
+
+#Clean the Column by combining values
+resume_clean <- resume_clean %>% mutate(job_req_min_experience = case_when(job_req_min_experience %in% c('',"0") ~ "0",
+job_req_min_experience %in% c('0.5',"1", "some") ~ "1",
+TRUE ~ job_req_min_experience))
+```
+
+```{r}
+#convert to Integer
+resume_clean$job_req_min_experience <- parse_integer(resume_clean$job_req_min_experience)
+table(resume_clean$job_req_min_experience, useNA = 'always')
+
+```
+
+```{r}
+table(resume_clean$job_req_computer, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+```
+
+```{r}
+table(resume_clean$job_req_organization, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#Will not use since very few variabes with 1 value and not quantifuable in resume
+column_drop <- append(column_drop,"job_req_organization")
+```
+
+```{r}
+table(resume_clean$job_req_school, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to factor
+resume_clean$job_req_school <- as.factor(resume_clean$job_req_school)
+```
+
+```{r}
+table(resume_clean$received_callback, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to factor
+resume_clean$received_callback <- factor(resume_clean$received_callback, levels=c("0","1"))
+
+```
+
+```{r}
+#first name column will not be used since it will over-fit
+column_drop <- append(column_drop,"firstname")
+```
+
+```{r}
+table(resume_clean$race, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$race <- as.factor(resume_clean$race)
+```
+
+```{r}
+table(resume_clean$gender, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$gender <- as.factor(resume_clean$gender)
+```
+
+```{r}
+table(resume_clean$years_college, useNA = 'always')
+#No Further cleaning required since there are no NAs
+```
+
+```{r}
+table(resume_clean$college_degree, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$college_degree <- as.factor(resume_clean$college_degree)
+```
+
+```{r}
+table(resume_clean$honors, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$honors <- as.factor(resume_clean$honors)
+```
+
+```{r}
+table(resume_clean$worked_during_school, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$worked_during_school <- as.factor(resume_clean$worked_during_school)
+
+```
+
+```{r}
+table(resume_clean$years_experience, useNA = 'always')
+#No Further cleaning required since there are no NAs
+```
+
+```{r}
+table(resume_clean$computer_skills, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+```
+
+```{r}
+table(resume_clean$special_skills, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$special_skills <- as.factor(resume_clean$special_skills)
+```
+
+```{r}
+table(resume_clean$volunteer, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$volunteer <- as.factor(resume_clean$volunteer)
+```
+
+```{r}
+table(resume_clean$military, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$military <- as.factor(resume_clean$military)
+```
+
+```{r}
+table(resume_clean$employment_holes, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$employment_holes <- as.factor(resume_clean$employment_holes)
+
+```
+
+```{r}
+table(resume_clean$has_email_address, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$has_email_address <- as.factor(resume_clean$has_email_address)
+```
+
+```{r}
+table(resume_clean$resume_quality, useNA = 'always')
+#No Further cleaning required since there are no NAs
+
+#convert to categorical
+resume_clean$resume_quality <- factor(resume_clean$resume_quality, levels = c("low", "high"))
+```
+
+```{r}
+#create new column to have boolean representation if Jobs
+resume_clean$satisfy_exp <- resume_clean$years_experience >= resume_clean$job_req_min_experience
+
+table(resume_clean$satisfy_exp, useNA = 'always')
+```
+
+```{r}
+#create new column to have boolean rep of computer skills
+resume_clean$satisfy_comp <- resume_clean$computer_skills >= resume_clean$job_req_computer
+
+table(resume_clean$satisfy_comp, useNA = 'always')
+```
+
+```{r}
+str(resume_clean)
+```
+
+```{r}
+#The Following columns will be removed
+column_drop <- append(column_drop,"job_req_school")
+column_drop <- append(column_drop,"job_req_organization")
+column_drop <- append(column_drop,"years_experience")
+column_drop <- append(column_drop,"job_req_min_experience")
+column_drop <- append(column_drop,"job_req_computer")
+column_drop <- append(column_drop,"computer_skills")
+column_drop <- append(column_drop, "years_college")
+column_drop <- append(column_drop, "worked_during_school")
+column_drop <- append(column_drop, "volunteer")
+column_drop <- append(column_drop, "military")
+column_drop <- append(column_drop, "has_email_address")
+```
+
+# 3. Modelling
+
+## 3.1 Model Selection
+
+For this project, Logistic Regression method was used to infer the factors affecting the callback outcomes for the following reasons:
+
+1.  Binary outcome variable makes logistic regression ideal for this analysis
+2.  It is interpretable and can be used to study how gender and race affect the chances of receiving a callback
+3.  The model is robust (to noise and outliers) and simplistic (easy and fast implementation and processing).
+
+## 3.2 Variable Selection
+
+Post the Data Cleaning and Processing, the variables were analysed and some of the variables were not included in the modelling process for the following resons:
+
+1.  Identifier Variables: These aren't relevant to the research question and would cause over-fitting if used e.g. Job Ad Id, First Name
+2.  Missing Values: variables which had very high missing values or NAs which couldn't be assumed/imputed e.g. Job ownership, Fed contractor
+3.  Non Matching: fields which couldn't be quantified due to no matching field in applicant information e.g. requirement fields for communication, organization
+4.  Redundant: Once the Derived Variables were created (Explained in Sec 2.2), the source variables are no longer required e.g. computer skills, job experience
+5.  Other Fields: These fields were dropped base on priori variable selection e.g. volunteering and worked during school
+
+While there was potential confounding possibilities with job type, role, experience required, computer skills since we are using the derived variables this issue is eliminated along with multicollinearity
+
+The Final Model uses the following Input variables:
+
+1.  Employer and Job Related Variables: Location (City), Industry, Role, Equal Opportunity Employer, Education Requirement
+2.  Applicant Related Variables: Race, Gender, Honors, Special Skills, Employment Holes, college degree
+3.  Derived Variables: Job Experience, Computer Skills
+4.  Other: Resume Quality
+
+## 3.3 Model Outputs
+
+The Generated Model has the following parameters:
+
+```{r}
+#create Df with columns removed
+
+model_df <- resume_clean[,!names(resume_clean) %in% column_drop]
+model_v1 <- glm(received_callback ~ .,data = model_df, family = "binomial")
+summary(model_v1)
+```
+
+```{r, output=TRUE, fig.align="center"}
+stargazer(model_v1, 
+          title = "Logistic Regression Results", 
+          type = "text",
+          dep.var.labels=c("Callback Received"),
+          float = TRUE, single.row = TRUE,
+          ci = TRUE, ci.level = 0.98,
+          covariate.labels=c(
+            "Job City: Chicago",
+            "Job Industry: Finance/Insurance/Real Estate",
+            "Job Industry: Manufacturing",
+            "Job Industry: Other Service",
+            "Job Industry: Transportation/Communication",
+            "Job Industry: Wholesale and Retail Trade",
+            "Job Role: Manager",
+            "Job Role: Retail Sales",
+            "Job Role: Sales Rep",
+            "Job Role: Secretary",
+            "Job Role: Supervisor",
+            "Equal Opportunity Employer: True",
+            "Job Requires Education: True",
+            "Applicant Race: White",
+            "Applicant Gender: Male",
+            "Applicant Has College Degree: True",
+            "Applicant Has Honors: True",
+            "Applicant Has Special Skills: True",
+            "Applicant Has Employment Holes: True",
+            "Resume Quality: High",
+            "Applicant Satisfies Experience Requiremnt: True",
+            "Applicant Satisfies Computer Skills Requiremnt: True",
+            "Constant"
+          ),
+          no.space = TRUE)
+
+```
+
+## 3.4 Model Assessment
+
+The following metrics were used for evaluating the model:
+
+1.  Kappa Score - It calculates the degree of agreement between the model's predictions and the actual class labels while accounting for the possibility of chance agreement. Kappa Score of the model is \~**0.18**
+2.  Sensitivity Score - measures the proportion of actual positives which are correctly identified as such, this is a good metric to use since our positive case (callback received) has very few observations in the dataset. The sensitivity of the model is **0.28**
+3.  ROC-AUC measures the model's ability to discriminate between the positive and negative classes. The ROC-AUC for model is **0.58**
+
+**Note**: Accuracy is not a good metric to use for this analysis since there is a very high imbalance in our dataset, but for reference purposes, the accuracy of the model is **86.37%**
+
+```{r}
+model_df$predict <- predict(model_v1, model_df, type = 'response')
+model_df$predicted_class <- ifelse(model_df$predict > 0.15, 1, 0)
+
+conmat <- confusionMatrix(as.factor(model_df$predicted_class ),as.factor(model_df$received_callback),
+                mode = "everything",positive = '1')
+conmat
+```
+
+```{r}
+tbl_regression(model_v1, exponentiate = TRUE)
+```
+
+The ROC-AUC plot of the model is as follows:
+
+```{r, output = TRUE, warning=FALSE, message=FALSE, fig.height=3.5, fig.width=3.5, fig.align="center"}
+roc_data <- roc(model_df$predicted_class ,factor(model_df$received_callback,ordered = TRUE))
+plot(roc_data, main="ROC Curve", print.thres=TRUE)
+legend("topleft", legend=sprintf("AUC = %.2f", auc(roc_data)), col=1, lty=1, cex=0.8)
+
+```
+
+The Confusion Matrix for the model is as follows:
+
+```{r, output = TRUE, warning=FALSE, message=FALSE, fig.height=3, fig.width=3, fig.align="center"}
+plot_confusion_matrix(as_tibble(conmat$table), 
+                      prediction_col = "Prediction",
+                      target_col = "Reference",
+                      counts_col = "n")
+```
+
+```{r}
+#Chi-Square
+with(model_v1, null.deviance - deviance)
+```
+
+```{r}
+#Degrees of Freedom
+with(model_v1, df.null - df.residual)
+```
+
+```{r}
+#P-Value
+with(model_v1, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+```
+
+# 4. Results
+
+The coefficient for the the gender variable at level male is -0.07 This means that keeping all other variables constant, if an applicant is a male, he has a lower chance of getting a call back than a female applicant.
+
+The coefficient for the race variable at level white is 0.45 This means that keeping all other variables constant, if an applicant is a white person, they have a higher chance of getting a call back than a black applicant.
+
+These Inferences can be confirmed by analyzing the below graphs, The % of women getting a callback is higher than that of men and similarly white people get more callbacks as compared to a black person.
+
+```{r}
+ plot_1 <- model_df %>%
+  count(gender, received_callback) %>%       
+  group_by(gender) %>%
+  mutate(pct=n/sum(n) * 100) %>%
+  ggplot() + aes(gender, n, fill=received_callback) +
+  geom_bar(stat="identity") +
+  ylab("Number of Applications") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct),"%")),
+            position=position_stack(vjust=0.5))+
+       scale_fill_discrete(labels=c('No', 'Yes'), name = "Recevied Callback")+
+  theme_bw()
+```
+
+```{r}
+plot_2<- model_df %>%
+  count(race, received_callback) %>%       
+  group_by(race) %>%
+  mutate(pct=n/sum(n) * 100) %>%
+  ggplot() + aes(race, n, fill=received_callback) +
+  geom_bar(stat="identity") +
+  ylab("Number of Applications") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct),"%")),
+            position=position_stack(vjust=0.5))+
+  scale_fill_discrete(labels=c('No', 'Yes'), name = "Recevied Callback")+
+  theme_bw()
+```
+
+```{r, output = TRUE, fig.align="center"}
+plot_3<- ggarrange(plot_1+rremove("ylab"), plot_2+rremove("ylab"),  nrow=1, common.legend = TRUE, legend="bottom")
+
+annotate_figure(plot_3, top = text_grob("Callbacks Recevied Based on Gender and Race"),
+                left = text_grob("Number of Observations",rot=90))
+
+```
+
+# 5. Future Work
+
+While the model was able to Infer the influence of race and gender on receiving a callback, the model can be improved by having more balanced data. some fields in the dataset did not have a matching field for applicant such as communication skills, organizational skills etc. which if available could also be used in the model.
+
+The Data is also old (2001-2002) so the results from it may not be be as applicable today since there are more variables such as mode of application, if the resume was scanned using any AI etc. So having more recent data with new fields can make the model better and more applicable.
